@@ -268,25 +268,49 @@ class MachCommands(CommandBase):
                 print("Can't find Visual Studio 2017 installation at %s." % base_vs_path)
                 sys.exit(1)
 
-        if 'windows' in target_triple:
-            gst_root = gstreamer_root(target_triple)
-            if gst_root:
-                append_to_path_env(os.path.join(gst_root, "lib"), env, "LIB")
-
         if uwp:
             # Don't try and build a desktop port.
             libsimpleservo = True
+
+            arches = {
+                "aarch64": {
+                    "angle": "arm64",
+                    "gst": "ARM64",
+                },
+                "x86_64": {
+                    "angle": "x64",
+                    "gst": "X86_64",
+                },
+            }
+            arch = arches.get(target_triple.split('-')[0])
+            if not arch:
+                print("Unsupported UWP target.")
+                sys.exit(1)
 
             # Ensure that the NuGet ANGLE package containing libEGL is accessible
             # to the Rust linker.
             append_to_path_env(
                 path.join(
                     os.getcwd(), "support", "hololens", "packages",
-                    "ANGLE.WindowsStore.Servo.2.1.13", "bin", "UAP", "x64"
+                    "ANGLE.WindowsStore.Servo.2.1.13", "bin", "UAP", arch['angle']
                 ),
                 env,
                 "LIB"
             )
+
+            # Don't want to mix non-UWP libraries with vendored UWP libraries.
+            if "gstreamer" in env['LIB']:
+                print("Found existing GStreamer library path in LIB. Please remove it.")
+                sys.exit(1)
+
+            # Override any existing GStreamer installation with the vendored libraries.
+            env["GSTREAMER_1_0_ROOT_" + arch['gst']] = self.msvc_package_dir("gstreamer-uwp")
+
+        # Ensure that GStreamer libraries are accessible when linking.
+        if 'windows' in target_triple:
+            gst_root = gstreamer_root(target_triple)
+            if gst_root:
+                append_to_path_env(os.path.join(gst_root, "lib"), env, "LIB")
 
         if android:
             if "ANDROID_NDK" not in env:
@@ -632,17 +656,20 @@ class MachCommands(CommandBase):
                     for lib in libs:
                         print("WARNING: could not find " + lib)
 
+                # UWP build has its own ANGLE library that it packages.
                 if not uwp:
                     package_generated_shared_libraries(["libEGL.dll", "libGLESv2.dll"], build_path, servo_exe_dir)
 
                 # copy needed gstreamer DLLs in to servo.exe dir
-                if "aarch64" not in target_triple:
-                    print("Packaging gstreamer DLLs")
-                    if not package_gstreamer_dlls(servo_exe_dir, target_triple, uwp):
-                        status = 1
-                print("Packaging MSVC DLLs")
-                if not package_msvc_dlls(servo_exe_dir, target_triple, vcinstalldir, vs_version):
+                print("Packaging gstreamer DLLs")
+                if not package_gstreamer_dlls(servo_exe_dir, target_triple, uwp):
                     status = 1
+
+                # UWP app packaging already bundles all required DLLs for us.
+                if not uwp:
+                    print("Packaging MSVC DLLs")
+                    if not package_msvc_dlls(servo_exe_dir, target_triple, vcinstalldir, vs_version):
+                        status = 1
 
             elif sys.platform == "darwin":
                 # On the Mac, set a lovely icon. This makes it easier to pick out the Servo binary in tools
@@ -715,9 +742,10 @@ def package_gstreamer_dlls(servo_exe_dir, target, uwp):
 
     # All the shared libraries required for starting up and loading plugins.
     gst_dlls = [
+        "avcodec-58.dll",
         "avfilter-7.dll",
         "avformat-58.dll",
-        "avcodec-58.dll",
+        "avresample-4.dll",
         "avutil-56.dll",
         "bz2.dll",
         "ffi-7.dll",
@@ -743,14 +771,12 @@ def package_gstreamer_dlls(servo_exe_dir, target, uwp):
         "gstwebrtc-1.0-0.dll",
         "intl-8.dll",
         "orc-0.4-0.dll",
+        "postproc-55.dll",
         "swresample-3.dll",
+        "swscale-5.dll",
+        "x264-157.dll",
         "z-1.dll",
     ]
-
-    # FIXME: until we build with UWP-enabled GStreamer binaries,
-    #        almost every UWP-friendly DLL depends on this
-    #        incompatible DLL.
-    gst_dlls += ["libwinpthread-1.dll"]
 
     if not uwp:
         gst_dlls += [
@@ -770,6 +796,7 @@ def package_gstreamer_dlls(servo_exe_dir, target, uwp):
             "libtheoraenc-1.dll",
             "libvorbis-0.dll",
             "libvorbisenc-2.dll",
+            "libwinpthread-1.dll",
             "nice-10.dll",
         ]
 
